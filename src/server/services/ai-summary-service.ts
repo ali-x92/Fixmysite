@@ -8,7 +8,7 @@ import type { IssueRepository } from "@/server/repositories/issue-repository";
 import type { RecommendationRepository } from "@/server/repositories/recommendation-repository";
 import type { SiteRepository } from "@/server/repositories/site-repository";
 
-import { createGroqService, type AiService } from "../ai/openai-service";
+import { createGroqService, type AiService } from "../ai/groq-service";
 import { AI_PROMPT_VERSION, type AiAuditInput } from "../ai/prompts";
 import type { ReportService } from "./report-service";
 

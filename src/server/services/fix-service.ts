@@ -2,7 +2,7 @@ import { aiFixResponseSchema, type AiFixResponse } from "@/features/analysis/ai-
 import type { FixRequest, FixResponse } from "@/features/issues/contracts";
 import type { IssueRepository } from "@/server/repositories/issue-repository";
 
-import { createGroqService, type AiService } from "../ai/openai-service";
+import { createGroqService, type AiService } from "../ai/groq-service";
 import { AI_PROMPT_VERSION, fallbackFix } from "../ai/prompts";
 import type { ReportService } from "./report-service";
 import { consumeAiFixCredit } from "./usage-limits";

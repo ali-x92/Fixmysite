@@ -7,7 +7,7 @@
     "lighthouse",
     "accessibility",
     "ai recommendations",
-    "openai"
+    "groq"
   ],
   "license": "MIT",
   "private": true,

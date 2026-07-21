@@ -16,7 +16,6 @@ import {
   type AiAuditInput,
 } from "./prompts";
 
-// Groq's OpenAI-compatible GPT-OSS model supports structured outputs.
 const AI_MODEL = "openai/gpt-oss-20b";
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 
@@ -29,10 +28,9 @@ export function createGroqService(): AiService | null {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return null;
 
-  // Groq provides an OpenAI-compatible Responses API. Keeping the official
-  // OpenAI client lets us retain its Zod structured-output helper while all
-  // requests are sent to Groq.
-  const client = new OpenAI({
+  // The client is configured exclusively with Groq's endpoint and API key.
+  // Its structured-output helper validates Groq responses against our Zod schemas.
+  const groqClient = new OpenAI({
     apiKey,
     baseURL: GROQ_BASE_URL,
     maxRetries: 0,
@@ -41,7 +39,7 @@ export function createGroqService(): AiService | null {
   return {
     async generateSummary(input) {
       return requestWithRetry(() =>
-        client.responses
+        groqClient.responses
           .parse({
             model: AI_MODEL,
             store: false,
@@ -57,7 +55,7 @@ export function createGroqService(): AiService | null {
     },
     async generateFix(input) {
       return requestWithRetry(() =>
-        client.responses
+        groqClient.responses
           .parse({
             model: AI_MODEL,
             store: false,
