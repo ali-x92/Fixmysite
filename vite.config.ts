@@ -1,7 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
+import netlify from "@netlify/vite-plugin-tanstack-start";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import react from "@vitejs/plugin-react";
-import { nitro } from "nitro/vite";
 import { cpSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineConfig, type Plugin } from "vite";
@@ -94,8 +94,6 @@ function patchLighthouseFlowAssetPath(librariesDirectory: string): void {
 // Netlify is the supported production target for this project. Keeping the
 // preset explicit guarantees Nitro emits Netlify's internal function manifest
 // instead of relying on hosting-provider auto-detection.
-const deploymentPreset = process.env.NITRO_PRESET ?? "netlify";
-
 export default defineConfig({
   plugins: [
     tailwindcss(),
@@ -109,10 +107,9 @@ export default defineConfig({
         client: { files: ["**/server/**"], specifiers: ["server-only"] },
       },
     }),
-    // Nitro writes Netlify's serverless function plus the static client assets.
-    nitro({ preset: deploymentPreset }),
+    // Official Netlify adapter for TanStack Start server routes/functions.
+    ...netlify(),
     react(),
-    copyLighthouseLocales(deploymentPreset),
   ],
   resolve: {
     tsconfigPaths: true,
