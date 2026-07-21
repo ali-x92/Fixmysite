@@ -1,0 +1,6 @@
+# Keep backend requests on Nitro's Netlify function before the SPA fallback.
+/_serverFn/* /_serverFn/:splat 200
+/api/* /api/:splat 200
+
+# The generated TanStack SPA shell handles all application routes in-browser.
+/* /_shell.html 200

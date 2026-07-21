@@ -1,0 +1,13 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+  NPM_FLAGS = "--include=dev"
+
+# Nitro owns .netlify/functions-internal and ships its server with the required
+# `nodeBundler: "none"` manifest. Keep Netlify's ordinary Functions directory
+# separate so it never tries to esbuild-wrap Nitro's already-built modules.
+[functions]
+  directory = "netlify/functions"
