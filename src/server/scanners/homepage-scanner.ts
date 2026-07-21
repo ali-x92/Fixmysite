@@ -1,6 +1,4 @@
 import type { Severity } from "@/server/db/database.types";
-import { join } from "node:path";
-
 import type { NormalizedUrl } from "./url";
 
 export type NormalizedIssue = {
@@ -31,6 +29,17 @@ const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 
 export async function scanHomepage(target: NormalizedUrl): Promise<ScanResult> {
+  // A complete Lighthouse run needs a Chromium cold start plus two page loads.
+  // That exceeds the 30-second Netlify function ceiling on many real sites.
+  // The serverless audit deliberately uses deterministic HTTP checks instead,
+  // while local development retains the full browser-backed audit below.
+  if (process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return scanServerlessHomepage(target);
+  }
+  return scanBrowserHomepage(target);
+}
+
+async function scanBrowserHomepage(target: NormalizedUrl): Promise<ScanResult> {
   // Keep these imports statically analyzable so Nitro includes them in the
   // generated Netlify function instead of looking for the project node_modules
   // directory at runtime.
@@ -38,29 +47,11 @@ export async function scanHomepage(target: NormalizedUrl): Promise<ScanResult> {
   const lighthouseModule = await import("lighthouse");
   const puppeteer = await import("puppeteer-core");
   const axe = await import("axe-core");
-  const isServerless = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
-  // Netlify stops this handler after 30 seconds. The audit deliberately uses
-  // bounded waits so a slow third-party script on the target site cannot make
-  // the entire analysis fail.
-  const lighthouseLoadTimeout = isServerless ? 10_000 : 45_000;
-  const axeNavigationTimeout = isServerless ? 7_000 : 30_000;
-  const securityFetchTimeout = isServerless ? 7_000 : 20_000;
-  const chromium = isServerless ? (await import("@sparticuz/chromium")).default : null;
+  const lighthouseLoadTimeout = 45_000;
+  const axeNavigationTimeout = 30_000;
+  const securityFetchTimeout = 20_000;
   const chrome = await chromeLauncher.launch({
-    // Netlify functions do not provide a system Chrome installation. The
-    // packaged Chromium binary is only used there; local development retains
-    // chrome-launcher's normal browser discovery.
-    chromePath: chromium
-      ? await chromium.executablePath(
-          join(
-            process.env.LAMBDA_TASK_ROOT ?? process.cwd(),
-            "node_modules/@sparticuz/chromium/bin",
-          ),
-        )
-      : undefined,
-    chromeFlags: chromium
-      ? chromium.args
-      : ["--headless=new", "--no-sandbox", "--disable-dev-shm-usage"],
+    chromeFlags: ["--headless=new", "--no-sandbox", "--disable-dev-shm-usage"],
   });
   try {
     const lighthouse = lighthouseModule.default;
@@ -70,8 +61,8 @@ export async function scanHomepage(target: NormalizedUrl): Promise<ScanResult> {
       onlyCategories: ["performance", "seo", "accessibility", "best-practices"],
       disableStorageReset: true,
       maxWaitForLoad: lighthouseLoadTimeout,
-      maxWaitForFcp: isServerless ? 8_000 : 20_000,
-      pauseAfterLoadMs: isServerless ? 500 : 1_000,
+      maxWaitForFcp: 20_000,
+      pauseAfterLoadMs: 1_000,
     });
     if (!lighthouseResult) throw new Error("Lighthouse did not return a result");
     const lhr = asRecord(lighthouseResult.lhr);
@@ -214,5 +205,84 @@ export async function scanHomepage(target: NormalizedUrl): Promise<ScanResult> {
     } catch {
       // The browser is already stopped; there is no audit result to discard.
     }
+  }
+}
+
+async function scanServerlessHomepage(target: NormalizedUrl): Promise<ScanResult> {
+  const startedAt = Date.now();
+  const securityHeaders = ["strict-transport-security", "content-security-policy", "x-frame-options"];
+  try {
+    const response = await fetch(target.url, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(12_000),
+      headers: { "user-agent": "FixMySiteAI/1.0 (+website audit)" },
+    });
+    const html = await response.text();
+    const elapsedMs = Date.now() - startedAt;
+    const hasTitle = /<title[^>]*>\s*[^<]+/i.test(html);
+    const hasDescription = /<meta[^>]+name=["']description["'][^>]+content=["'][^"']+/i.test(html);
+    const hasH1 = /<h1\b[^>]*>\s*[^<]+/i.test(html);
+    const hasViewport = /<meta[^>]+name=["']viewport["']/i.test(html);
+    const hasLanguage = /<html[^>]+\blang=["'][^"']+/i.test(html);
+    const imagesWithoutAlt = (html.match(/<img\b(?![^>]*\balt=)[^>]*>/gi) ?? []).length;
+    const securityMissing = securityHeaders.filter((header) => !response.headers.get(header));
+    const seoChecks = [hasTitle, hasDescription, hasH1];
+    const accessibilityChecks = [hasLanguage, imagesWithoutAlt === 0];
+    const performance = Math.max(20, Math.min(100, Math.round(100 - elapsedMs / 70)));
+    const seo = Math.round((seoChecks.filter(Boolean).length / seoChecks.length) * 100);
+    const accessibility = Math.round(
+      (accessibilityChecks.filter(Boolean).length / accessibilityChecks.length) * 100,
+    );
+    const security = Math.round(
+      (((target.url.startsWith("https://") ? 1 : 0) +
+        (securityHeaders.length - securityMissing.length) / securityHeaders.length) /
+        2) *
+        100,
+    );
+    const issues: NormalizedIssue[] = [];
+    const addIssue = (category: string, title: string, description: string, recommendation: string) =>
+      issues.push({
+        category,
+        severity: "medium",
+        title,
+        description,
+        recommendation,
+        estimatedFixTime: "15–30 min",
+        source: category === "security" ? "security" : "lighthouse",
+        evidence: {},
+      });
+    if (!hasTitle) addIssue("seo", "Missing page title", "The homepage has no usable title tag.", "Add a concise, unique title tag.");
+    if (!hasDescription)
+      addIssue("seo", "Missing meta description", "The homepage has no meta description.", "Add a clear meta description for search results.");
+    if (!hasH1) addIssue("seo", "Missing primary heading", "The homepage has no visible H1 heading.", "Add one descriptive H1 heading.");
+    if (!hasViewport) addIssue("mobile", "Missing viewport setting", "The homepage may not scale correctly on mobile.", "Add a responsive viewport meta tag.");
+    if (!hasLanguage) addIssue("accessibility", "Missing page language", "The HTML document has no language declaration.", "Set the lang attribute on the html element.");
+    if (imagesWithoutAlt > 0)
+      addIssue("accessibility", "Images missing alternative text", `${imagesWithoutAlt} image(s) have no alt attribute.`, "Add meaningful alt text or empty alt attributes for decorative images.");
+    for (const header of securityMissing)
+      addIssue("security", `Missing ${header} header`, "The homepage response does not include this security header.", `Configure the ${header} response header.`);
+    const mobile = hasViewport ? Math.round((performance + accessibility) / 2) : Math.round((performance + accessibility) / 3);
+    const ux = Math.round((accessibility + seo + performance) / 3);
+    return {
+      scores: { performance, seo, accessibility, security, mobile, ux, overall: Math.round((performance + seo + accessibility + security + mobile + ux) / 6) },
+      issues: issues.slice(0, 40),
+    };
+  } catch (error) {
+    console.error("[scan] Serverless homepage check failed", error);
+    return {
+      scores: { performance: 0, seo: 0, accessibility: 0, security: 0, mobile: 0, ux: 0, overall: 0 },
+      issues: [
+        {
+          category: "availability",
+          severity: "high",
+          title: "Homepage could not be reached",
+          description: "The audit service could not fetch the homepage within 12 seconds.",
+          recommendation: "Confirm the URL is publicly accessible and try again.",
+          estimatedFixTime: "15–30 min",
+          source: "security",
+          evidence: {},
+        },
+      ],
+    };
   }
 }
