@@ -32,14 +32,24 @@ function ReportDetail() {
   const [error, setError] = useState<string | null>(null);
   const { notify } = useToast();
   useEffect(() => {
-    Promise.all([getReport(id), getSummary(id)])
-      .then(([nextReport, nextSummary]) => {
-        setReport(nextReport);
-        setSummary(nextSummary);
+    let cancelled = false;
+    getReport(id)
+      .then((nextReport) => {
+        if (!cancelled) setReport(nextReport);
       })
-      .catch((cause) =>
-        setError(cause instanceof Error ? cause.message : "Unable to load this report."),
-      );
+      .catch((cause) => {
+        if (!cancelled)
+          setError(cause instanceof Error ? cause.message : "Unable to load this report.");
+      });
+    getSummary(id)
+      .then((nextSummary) => {
+        if (!cancelled) setSummary(nextSummary);
+      })
+      // The report remains useful even if the optional AI request is delayed.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   if (error) {

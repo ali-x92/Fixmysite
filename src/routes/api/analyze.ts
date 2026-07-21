@@ -22,7 +22,6 @@ export const Route = createFileRoute("/api/analyze")({
           try {
             const services = createServerServices(authenticated.client);
             const result = await services.analysisRunner.run(authenticated.user.id, input);
-            await services.summary.generate(authenticated.user.id, result.analysisId);
             return jsonResponse(analyzeResponseSchema, result, 201);
           } catch (error) {
             if (error instanceof UsageLimitError) return usageLimitResponse(error.message);

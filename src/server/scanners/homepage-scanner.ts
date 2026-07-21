@@ -39,6 +39,12 @@ export async function scanHomepage(target: NormalizedUrl): Promise<ScanResult> {
   const puppeteer = await import("puppeteer-core");
   const axe = await import("axe-core");
   const isServerless = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME);
+  // Netlify stops this handler after 30 seconds. The audit deliberately uses
+  // bounded waits so a slow third-party script on the target site cannot make
+  // the entire analysis fail.
+  const lighthouseLoadTimeout = isServerless ? 10_000 : 45_000;
+  const axeNavigationTimeout = isServerless ? 7_000 : 30_000;
+  const securityFetchTimeout = isServerless ? 7_000 : 20_000;
   const chromium = isServerless ? (await import("@sparticuz/chromium")).default : null;
   const chrome = await chromeLauncher.launch({
     // Netlify functions do not provide a system Chrome installation. The
@@ -63,6 +69,9 @@ export async function scanHomepage(target: NormalizedUrl): Promise<ScanResult> {
       output: "json",
       onlyCategories: ["performance", "seo", "accessibility", "best-practices"],
       disableStorageReset: true,
+      maxWaitForLoad: lighthouseLoadTimeout,
+      maxWaitForFcp: isServerless ? 8_000 : 20_000,
+      pauseAfterLoadMs: isServerless ? 500 : 1_000,
     });
     if (!lighthouseResult) throw new Error("Lighthouse did not return a result");
     const lhr = asRecord(lighthouseResult.lhr);
@@ -76,28 +85,44 @@ export async function scanHomepage(target: NormalizedUrl): Promise<ScanResult> {
     let axeResults: Record<string, unknown> = {};
     try {
       const page = await browser.newPage();
-      await page.goto(target.url, { waitUntil: "networkidle2", timeout: 45_000 });
-      const axeSource = axe.default.source ?? axe.source;
-      await page.evaluate(axeSource);
-      axeResults = await page.evaluate(async () =>
-        (
-          globalThis as unknown as { axe: { run: () => Promise<Record<string, unknown>> } }
-        ).axe.run(),
-      );
-      await page.close();
+      try {
+        // networkidle2 frequently waits on analytics/chat widgets forever.
+        // DOM content is sufficient for Axe's DOM-based rules.
+        await page.goto(target.url, { waitUntil: "domcontentloaded", timeout: axeNavigationTimeout });
+        const axeSource = axe.default.source ?? axe.source;
+        await page.evaluate(axeSource);
+        axeResults = await page.evaluate(async () =>
+          (
+            globalThis as unknown as { axe: { run: () => Promise<Record<string, unknown>> } }
+          ).axe.run(),
+        );
+      } catch (error) {
+        // Lighthouse data is still useful if the optional second accessibility
+        // pass cannot finish before the serverless deadline.
+        console.warn("[scan] Axe pass skipped", error);
+      } finally {
+        await page.close().catch(() => undefined);
+      }
     } finally {
       await browser.disconnect();
     }
-    const response = await fetch(target.url, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(20_000),
-    });
     const securityHeaders = [
       "strict-transport-security",
       "content-security-policy",
       "x-frame-options",
     ];
-    const securityMissing = securityHeaders.filter((header) => !response.headers.get(header));
+    let securityMissing = securityHeaders;
+    try {
+      const response = await fetch(target.url, {
+        redirect: "follow",
+        signal: AbortSignal.timeout(securityFetchTimeout),
+      });
+      securityMissing = securityHeaders.filter((header) => !response.headers.get(header));
+    } catch (error) {
+      // A failed passive header check must not discard an otherwise completed
+      // browser audit. Record the headers as unavailable/missing instead.
+      console.warn("[scan] Security header check skipped", error);
+    }
     const security = Math.round(
       (((target.url.startsWith("https://") ? 1 : 0) +
         (securityHeaders.length - securityMissing.length) / securityHeaders.length) /
